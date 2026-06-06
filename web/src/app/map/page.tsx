@@ -11,16 +11,17 @@ import { Canvas, type CameraTarget } from "@/components/Canvas";
 import { Sidebar } from "@/components/Sidebar";
 import { VoiceBar } from "@/components/VoiceBar";
 import { CODEMAP, type CodeMapGraph, type GraphNode } from "@/lib/data";
-import { PRECACHED } from "@/lib/precached";
 import { codeMapGraphSchema } from "@/lib/codemap-schema";
 import { useNarration } from "@/lib/useNarration";
 
 /**
- * Resolve the graph to render, in priority order:
- *   1. sessionStorage 'cm_graph' — the live Gemini result for the chosen repo
- *      (set by the loading screen). Re-validated so a corrupt blob can't crash.
- *   2. PRECACHED — a real Gemini-generated graph baked in (guarantees a demo).
- *   3. CODEMAP seed — the design's placeholder.
+ * Resolve the graph to render:
+ *   1. sessionStorage 'cm_graph' — the live Gemini result for the CHOSEN repo
+ *      (set by the loading screen), re-validated so a corrupt blob can't crash.
+ *   2. CODEMAP seed — neutral placeholder only when /map is opened directly
+ *      with no analysis (never another repo's data).
+ * Each analyzed repo is independent: the loading screen clears cm_graph before
+ * every run, so one repo's map can never leak into the next.
  */
 function resolveGraph(): CodeMapGraph {
   if (typeof window !== "undefined") {
@@ -31,18 +32,16 @@ function resolveGraph(): CodeMapGraph {
         if (parsed.success) return parsed.data as CodeMapGraph;
       }
     } catch {
-      /* ignore — fall through to precached/seed */
+      /* ignore — fall through to seed */
     }
   }
-  if (PRECACHED) return PRECACHED;
   return CODEMAP;
 }
 
 export default function MapPage() {
-  // SSR-stable initial graph (precached → seed); the live sessionStorage graph
-  // is swapped in after mount to avoid a hydration mismatch.
-  const initialGraph = PRECACHED ?? CODEMAP;
-  const [data, setData] = useState<CodeMapGraph>(initialGraph);
+  // SSR-stable initial graph (neutral seed); the live sessionStorage graph for
+  // the chosen repo is swapped in after mount to avoid a hydration mismatch.
+  const [data, setData] = useState<CodeMapGraph>(CODEMAP);
 
   const defaultId = useMemo(
     () => data.nodes.find((n) => n.selectedDefault)?.id ?? data.nodes[0]?.id ?? null,
@@ -53,8 +52,10 @@ export default function MapPage() {
   const [cameraTarget, setCameraTarget] = useState<CameraTarget | null>(null);
   const [repo, setRepo] = useState<RepoMeta>(data.repo);
   const nonce = useRef(0);
-  // preload this graph's node audio so clicks fire instantly
-  const { narrate } = useNarration(data.nodes.map((n) => n.id));
+  // background-prefetch this graph's node narration so clicks fire instantly
+  const { narrate } = useNarration(
+    data.nodes.map((n) => ({ id: n.id, narration: n.narration })),
+  );
 
   // After mount, prefer the live Gemini graph from the loading screen.
   useEffect(() => {
@@ -84,23 +85,6 @@ export default function MapPage() {
   );
 
   const onAskAbout = useCallback((node: GraphNode) => focus(node.id), [focus]);
-
-  // If we fell back to the precached/seed graph (no live result), at least show
-  // the repo the user picked. A live graph's repo is authoritative — leave it.
-  useEffect(() => {
-    try {
-      if (sessionStorage.getItem("cm_graph")) return;
-      const raw = localStorage.getItem("cm_repo");
-      if (raw) {
-        const r = JSON.parse(raw);
-        if (r && r.owner && r.name) {
-          setRepo((prev) => ({ ...prev, owner: r.owner, name: r.name }));
-        }
-      }
-    } catch {
-      /* ignore */
-    }
-  }, []);
 
   return (
     <div className="app">

@@ -36,9 +36,12 @@ const CheckIcon = (
 export function Loading() {
   const router = useRouter();
   const [idx, setIdx] = useState(0);
-  const [repoLabel, setRepoLabel] = useState("northwind/atlas-platform");
+  const [repoLabel, setRepoLabel] = useState("");
+  const [failed, setFailed] = useState(false);
+  const [errMsg, setErrMsg] = useState("");
   // tracks the live /api/analyze call: "pending" | "done" (graph stored) | "failed"
   const analyzeRef = useRef<"pending" | "done" | "failed">("pending");
+  const errRef = useRef<string>("");
 
   useEffect(() => {
     try {
@@ -74,35 +77,42 @@ export function Loading() {
       }
 
       if (!owner || !name) {
+        errRef.current = "No repository selected.";
         analyzeRef.current = "failed";
         return;
       }
 
-      // The precached demo repo already has pre-rendered Gemini TTS narration.
-      // Skip live generation for it so /map serves PRECACHED (with real audio).
-      if (owner.toLowerCase() === "brul30" && name.toLowerCase() === "getcovered") {
-        analyzeRef.current = "done"; // cm_graph left cleared → /map uses PRECACHED
-        return;
-      }
-
+      // Every repo is analyzed live and independently — no special cases.
       try {
         const res = await fetch("/api/analyze", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ owner, name }),
         });
-        if (!res.ok) throw new Error(`analyze HTTP ${res.status}`);
+        if (!res.ok) {
+          let detail = `HTTP ${res.status}`;
+          try {
+            const body = await res.json();
+            if (body?.error) detail = body.error;
+          } catch {
+            /* ignore */
+          }
+          throw new Error(detail);
+        }
         const graph = await res.json();
         if (cancelled) return;
         try {
           sessionStorage.setItem("cm_graph", JSON.stringify(graph));
           analyzeRef.current = "done";
         } catch {
-          // storage blocked → treat as failure so /map uses the fallback
+          errRef.current = "Could not store the generated map.";
           analyzeRef.current = "failed";
         }
-      } catch {
-        if (!cancelled) analyzeRef.current = "failed";
+      } catch (e) {
+        if (!cancelled) {
+          errRef.current = e instanceof Error ? e.message : "Analysis failed.";
+          analyzeRef.current = "failed";
+        }
       }
     }
 
@@ -126,8 +136,14 @@ export function Loading() {
       const MAX_TRIES = 90; // ~45s safety cap, then fall back regardless
       let timer = 0;
       const tick = () => {
-        if (analyzeRef.current !== "pending" || tries >= MAX_TRIES) {
+        if (analyzeRef.current === "done") {
           router.push("/map");
+          return;
+        }
+        if (analyzeRef.current === "failed" || tries >= MAX_TRIES) {
+          // Don't route to a stale/other map — surface the failure honestly.
+          setErrMsg(errRef.current || "Analysis timed out. Please try again.");
+          setFailed(true);
           return;
         }
         tries += 1;
@@ -143,6 +159,31 @@ export function Loading() {
   const finished = idx >= STEPS.length;
   const pct = finished ? 100 : Math.round(((idx + 1) / STEPS.length) * 100);
   const stat = finished ? "Map ready" : STATS[idx];
+
+  if (failed) {
+    return (
+      <div className="onb loading screen-in">
+        <div className="onb-grid" />
+        <div className="onb-glow" />
+        <div className="load-card" style={{ textAlign: "center", gap: 14 }}>
+          <div className="load-eyebrow">Analysis failed</div>
+          <h2 className="load-title">
+            Couldn&apos;t map <b>{repoLabel || "that repo"}</b>
+          </h2>
+          <p className="land-sub" style={{ maxWidth: 440 }}>
+            {errMsg}
+          </p>
+          <p className="land-sub" style={{ opacity: 0.6, fontSize: 13, maxWidth: 440 }}>
+            Tip: unauthenticated GitHub allows ~60 requests/hour per IP — if you&apos;ve mapped
+            several repos, wait a bit, or try a different public repo.
+          </p>
+          <button className="btn-gh" onClick={() => router.push("/")} style={{ marginTop: 6 }}>
+            <span className="gh-tx">Try another repo</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="onb loading screen-in">

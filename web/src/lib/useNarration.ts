@@ -2,30 +2,37 @@
 /* ============================================================
    useNarration — the "tour guide" voice.
 
-   Playback tiers per node:
-     1. pre-rendered Gemini TTS file (public/narration/<id>.wav), PRELOADED so
-        clicks fire instantly;
-     2. live Gemini TTS via /api/tts (for repos with no pre-rendered file);
-     3. browser Web Speech (last-ditch fallback).
+   Latency killer: as soon as a graph loads, EVERY node's narration is
+   pre-generated via Gemini TTS in the background and cached as a blob URL.
+   By the time the user clicks, the audio is already in memory → instant.
 
-   Barge-in: every narrate() bumps a token and aborts any in-flight request, so
-   rapid clicks never stack — only the latest one speaks.
+   narrate(id) playback order:
+     1. cached blob (prefetched Gemini TTS)  → instant
+     2. live /api/tts (if not prefetched yet) → ~1-2s
+     3. browser Web Speech                    → last resort
+
+   Barge-in: every narrate() bumps a token + aborts in-flight requests, so
+   rapid clicks never stack.
    ============================================================ */
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const RATE = 1.15; // snappier, more "real-time" delivery
+const RATE = 1.12;
 
-export function useNarration(preloadIds?: string[]) {
+interface NarrNode {
+  id: string;
+  narration?: string;
+}
+
+export function useNarration(nodes?: NarrNode[]) {
   const [speaking, setSpeaking] = useState(false);
   const [supported, setSupported] = useState(true);
   const voiceRef = useRef<SpeechSynthesisVoice | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const cacheRef = useRef<Map<string, HTMLAudioElement>>(new Map());
-  const tokenRef = useRef(0); // bumped on every narrate → invalidates older async paths
+  const blobCache = useRef<Map<string, string>>(new Map()); // nodeId → blob URL
+  const tokenRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
-  const blobUrlRef = useRef<string | null>(null);
 
-  // pick a browser voice (only used for the last-ditch fallback)
+  // browser voice (fallback only)
   useEffect(() => {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) {
       setSupported(false);
@@ -47,25 +54,67 @@ export function useNarration(preloadIds?: string[]) {
     };
   }, []);
 
-  // Preload the current graph's node audio so the first click is instant.
-  const preloadKey = preloadIds?.join(",");
+  // Background-prefetch ALL node audio for the current graph.
+  const nodesKey = nodes?.map((n) => n.id).join(",");
   useEffect(() => {
-    if (!preloadIds || typeof window === "undefined") return;
-    for (const id of preloadIds) {
-      const url = `/narration/${encodeURIComponent(id)}.wav`;
-      if (!cacheRef.current.has(url)) {
-        const a = new Audio();
-        a.preload = "auto";
-        a.src = url;
-        a.playbackRate = RATE;
-        cacheRef.current.set(url, a);
+    if (!nodes || nodes.length === 0 || typeof window === "undefined") return;
+    let cancelled = false;
+    const cache = blobCache.current;
+
+    const fetchOne = async (n: NarrNode) => {
+      if (cancelled || cache.has(n.id) || !n.narration) return;
+      try {
+        // static pre-rendered file first (cheap if it exists)
+        const staticUrl = `/narration/${encodeURIComponent(n.id)}.wav`;
+        const head = await fetch(staticUrl);
+        if (cancelled) return;
+        if (head.ok) {
+          cache.set(n.id, staticUrl);
+          return;
+        }
+      } catch {
+        /* fall through to live TTS */
       }
-    }
+      try {
+        const res = await fetch("/api/tts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: n.narration }),
+        });
+        if (cancelled || !res.ok) return;
+        const blob = await res.blob();
+        if (cancelled) return;
+        cache.set(n.id, URL.createObjectURL(blob));
+      } catch {
+        /* leave uncached → narrate() will do it live on click */
+      }
+    };
+
+    // small concurrency so we don't fire 9 calls at once
+    (async () => {
+      const queue = [...nodes];
+      const workers = Array.from({ length: 3 }, async () => {
+        while (queue.length && !cancelled) {
+          const n = queue.shift();
+          if (n) await fetchOne(n);
+        }
+      });
+      await Promise.all(workers);
+    })();
+
+    return () => {
+      cancelled = true;
+      // revoke blob URLs from the previous graph (keep static-file URLs)
+      for (const url of cache.values()) {
+        if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+      }
+      cache.clear();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [preloadKey]);
+  }, [nodesKey]);
 
   const hardStop = useCallback(() => {
-    tokenRef.current += 1; // invalidate anything in flight
+    tokenRef.current += 1;
     if (abortRef.current) {
       abortRef.current.abort();
       abortRef.current = null;
@@ -78,10 +127,6 @@ export function useNarration(preloadIds?: string[]) {
       }
       audioRef.current = null;
     }
-    if (blobUrlRef.current) {
-      URL.revokeObjectURL(blobUrlRef.current);
-      blobUrlRef.current = null;
-    }
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
@@ -90,7 +135,6 @@ export function useNarration(preloadIds?: string[]) {
 
   const stop = useCallback(() => hardStop(), [hardStop]);
 
-  // browser Web Speech — last-ditch fallback only
   const speakText = useCallback((text: string, token?: number) => {
     if (typeof window === "undefined" || !("speechSynthesis" in window) || !text) return;
     if (token !== undefined && token !== tokenRef.current) return;
@@ -104,9 +148,24 @@ export function useNarration(preloadIds?: string[]) {
     window.speechSynthesis.speak(u);
   }, []);
 
-  // tier 2: live Gemini TTS (abortable, token-guarded)
+  const playUrl = useCallback((url: string, token: number, onFail: () => void) => {
+    if (token !== tokenRef.current) return;
+    const a = new Audio(url);
+    a.playbackRate = RATE;
+    audioRef.current = a;
+    a.onplay = () => {
+      if (token === tokenRef.current) setSpeaking(true);
+    };
+    a.onended = () => {
+      if (token === tokenRef.current) setSpeaking(false);
+    };
+    a.onerror = onFail;
+    a.play().catch(onFail);
+  }, []);
+
+  // live TTS (only when a node wasn't prefetched yet)
   const ttsLive = useCallback(
-    async (text: string, token: number) => {
+    async (nodeId: string, text: string, token: number) => {
       if (!text) return;
       try {
         const ctrl = new AbortController();
@@ -118,60 +177,33 @@ export function useNarration(preloadIds?: string[]) {
           body: JSON.stringify({ text }),
           signal: ctrl.signal,
         });
-        if (token !== tokenRef.current) return; // superseded by a newer click
+        if (token !== tokenRef.current) return;
         if (!res.ok) throw new Error("tts http");
         const blob = await res.blob();
         if (token !== tokenRef.current) return;
         const url = URL.createObjectURL(blob);
-        blobUrlRef.current = url;
-        const a = new Audio(url);
-        a.playbackRate = RATE;
-        audioRef.current = a;
-        a.onended = () => {
-          if (token === tokenRef.current) setSpeaking(false);
-          URL.revokeObjectURL(url);
-          if (blobUrlRef.current === url) blobUrlRef.current = null;
-        };
-        a.onerror = () => speakText(text, token);
-        await a.play();
+        blobCache.current.set(nodeId, url); // cache for next time
+        playUrl(url, token, () => speakText(text, token));
       } catch (err) {
         if ((err as Error)?.name === "AbortError") return;
         speakText(text, token);
       }
     },
-    [speakText],
+    [playUrl, speakText],
   );
 
-  // tier 1: pre-rendered static file (preloaded) → falls through to live TTS
   const narrate = useCallback(
     (nodeId: string, fallbackText = "") => {
-      hardStop(); // cancels current audio + in-flight fetch, bumps token
+      hardStop();
       const token = tokenRef.current;
-      const url = `/narration/${encodeURIComponent(nodeId)}.wav`;
-      const cached = cacheRef.current.get(url);
-      const a = cached ?? new Audio(url);
-      a.playbackRate = RATE;
+      const cached = blobCache.current.get(nodeId);
       if (cached) {
-        try {
-          a.currentTime = 0;
-        } catch {
-          /* ignore */
-        }
+        playUrl(cached, token, () => ttsLive(nodeId, fallbackText, token));
+      } else {
+        ttsLive(nodeId, fallbackText, token);
       }
-      audioRef.current = a;
-      const onFail = () => {
-        if (token === tokenRef.current) ttsLive(fallbackText, token);
-      };
-      a.onplay = () => {
-        if (token === tokenRef.current) setSpeaking(true);
-      };
-      a.onended = () => {
-        if (token === tokenRef.current) setSpeaking(false);
-      };
-      a.onerror = onFail;
-      a.play().catch(onFail);
     },
-    [hardStop, ttsLive],
+    [hardStop, playUrl, ttsLive],
   );
 
   return { narrate, speak: speakText, stop, speaking, supported };

@@ -1,6 +1,7 @@
 /* ============================================================
    CodeMap — top header (ported from componentsUI/assets/components.jsx)
    ============================================================ */
+import Link from "next/link";
 import { Icon } from "./Icon";
 
 export interface RepoMeta {
@@ -13,7 +14,8 @@ export interface RepoMeta {
 export function Header({ repo }: { repo: RepoMeta }) {
   return (
     <header className="hdr">
-      <div className="brand">
+      {/* Logo → home: start over and map another repo. */}
+      <Link href="/" className="brand" title="Map another repo" style={{ textDecoration: "none", color: "inherit" }}>
         <div className="brand-mark">
           <Icon n="logo" />
         </div>
@@ -23,7 +25,7 @@ export function Header({ repo }: { repo: RepoMeta }) {
           </div>
           <div className="brand-tag">tour guide</div>
         </div>
-      </div>
+      </Link>
 
       <div className="hdr-divider" />
 
