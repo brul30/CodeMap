@@ -1,0 +1,23 @@
+{
+  "name": "codemap-worker",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Standalone analysis worker for CodeMap — runs repo ingestion outside Vercel's serverless timeout.",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "check-env": "node --env-file=.env scripts/check-env.mjs",
+    "create-index": "node --env-file=.env scripts/create-pinecone-index.mjs",
+    "check-supabase": "node --env-file=.env scripts/check-supabase.mjs"
+  },
+  "dependencies": {
+    "@pinecone-database/pinecone": "^3.0.3",
+    "@supabase/supabase-js": "^2.45.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

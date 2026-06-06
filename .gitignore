@@ -1,0 +1,35 @@
+.claude/*
+architecture.md
+crop1.png
+componentsUI/*
+
+HowToWorkStructure.md
+IMG_3928.HEIC
+IMG_3928.png
+*.HEIC
+*.pdf
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+dist/
+build/
+.turbo/
+
+# Env / secrets (never commit real keys)
+.env
+.env.local
+.env.*.local
+.env.production
+
+# Logs & misc
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+.DS_Store
+.vercel
+coverage/
+*.tsbuildinfo
+next-env.d.ts
