@@ -1,13 +1,11 @@
 "use client";
 /* ============================================================
    CodeMap — landing (ported from componentsUI/Get Started.html · Screen 1)
-   "Connect GitHub" triggers Clerk GitHub OAuth via the v7 useSignIn API.
-   Clerk v7 changed useSignIn() return type to SignInSignalValue (no isLoaded);
-   OAuth is initiated via signIn.sso({ strategy, redirectUrl, redirectCallbackUrl }).
+   Paste a public GitHub repo URL → parse owner/name → /loading runs the
+   live Gemini analysis (POST /api/analyze) and hands off to /map. No auth.
    ============================================================ */
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { useSignIn, useAuth } from "@clerk/nextjs";
 
 const BRAND_MARK = (
   <svg viewBox="0 0 24 24" fill="none">
@@ -36,19 +34,10 @@ const WIRES = [
 
 export default function LandingPage() {
   const router = useRouter();
-  const { isSignedIn } = useAuth();
-  // Clerk v7: useSignIn() returns SignInSignalValue — no isLoaded discriminant.
-  // signIn is always a SignInFutureResource (never undefined).
-  const { signIn } = useSignIn();
+  const [url, setUrl] = useState("");
+  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [litExtra, setLitExtra] = useState<number | null>(null);
-
-  // If already authenticated, skip the landing and go straight to the picker.
-  useEffect(() => {
-    if (isSignedIn) {
-      router.replace("/picker");
-    }
-  }, [isSignedIn, router]);
 
   // ambient mini-map: briefly light a neutral node for life
   useEffect(() => {
@@ -67,22 +56,26 @@ export default function LandingPage() {
     };
   }, []);
 
-  const connect = async () => {
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    // Accept https://github.com/owner/repo, git@github.com:owner/repo, or owner/repo
+    const m =
+      url.trim().match(/github\.com[/:]([^/\s]+)\/([^/\s#?]+?)(?:\.git)?(?:[/#?].*)?$/i) ||
+      url.trim().match(/^([\w.-]+)\/([\w.-]+)$/);
+    if (!m) {
+      setError("Paste a public GitHub repo URL — e.g. https://github.com/owner/repo");
+      return;
+    }
+    const owner = m[1];
+    const name = m[2];
+    setError("");
     setLoading(true);
     try {
-      // Clerk v7 SSO API: signIn.sso() initiates the OAuth redirect.
-      // redirectUrl      = the intermediate page Clerk calls on return from GitHub.
-      // redirectCallbackUrl = final destination after Clerk finalises the session.
-      await signIn.sso({
-        strategy: "oauth_github",        // OAuthStrategy — must use 'oauth_' prefix here
-        redirectUrl: "/sso-callback",    // our /sso-callback page calls handleRedirectCallback
-        redirectCallbackUrl: "/picker",  // where Clerk lands the user after auth completes
-      });
+      localStorage.setItem("cm_repo", JSON.stringify({ owner, name }));
     } catch {
-      // OAuth redirect failed (e.g. popup blocked, GitHub connection not enabled
-      // in Clerk dashboard). Reset loading so the user can retry.
-      setLoading(false);
+      /* ignore */
     }
+    router.push("/loading");
   };
 
   return (
@@ -104,32 +97,44 @@ export default function LandingPage() {
           <span className="dim">before you read it.</span>
         </h1>
         <p className="land-sub">
-          Connect a repository and CodeMap reverse-engineers a live architecture map — then walks you through it with an
-          AI audio tour.
+          Paste any public GitHub repo and CodeMap reverse-engineers a live architecture map — then walks you through it
+          with an AI audio tour.
         </p>
 
-        <div className="cta-row">
-          <button className={"btn-gh" + (loading ? " loading" : "")} onClick={connect}>
-            <span className="gh-ic">
-              <svg viewBox="0 0 16 16" fill="currentColor">
-                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
-              </svg>
-            </span>
-            <span className="gh-tx">Connect GitHub</span>
-            <span className="spinner" />
-          </button>
-        </div>
+        <form className="cta-row" onSubmit={submit} style={{ flexDirection: "column", alignItems: "stretch", gap: 10 }}>
+          <div style={{ display: "flex", gap: 10, width: "100%", maxWidth: 460 }}>
+            <input
+              value={url}
+              onChange={(e) => {
+                setUrl(e.target.value);
+                if (error) setError("");
+              }}
+              placeholder="https://github.com/owner/repo"
+              aria-label="Public GitHub repo URL"
+              autoFocus
+              style={{
+                flex: 1,
+                padding: "12px 14px",
+                borderRadius: 10,
+                border: "1px solid var(--border-2, rgba(255,255,255,0.14))",
+                background: "rgba(255,255,255,0.04)",
+                color: "inherit",
+                font: "inherit",
+                outline: "none",
+              }}
+            />
+            <button type="submit" className={"btn-gh" + (loading ? " loading" : "")}>
+              <span className="gh-tx">{loading ? "Mapping…" : "Map it"}</span>
+              <span className="spinner" />
+            </button>
+          </div>
+          {error && (
+            <span style={{ color: "var(--rose, #F2789A)", fontSize: 13 }}>{error}</span>
+          )}
+        </form>
 
         <div className="land-foot">
-          <span>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <rect x="5" y="11" width="14" height="9" rx="2" />
-              <path d="M8 11V8a4 4 0 0 1 8 0v3" />
-            </svg>
-            Secured by Clerk
-          </span>
-          <span className="sep" />
-          <span>Read-only access</span>
+          <span>Public repos · read-only · powered by Gemini</span>
         </div>
       </div>
 

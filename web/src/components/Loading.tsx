@@ -78,6 +78,13 @@ export function Loading() {
         return;
       }
 
+      // The precached demo repo already has pre-rendered Gemini TTS narration.
+      // Skip live generation for it so /map serves PRECACHED (with real audio).
+      if (owner.toLowerCase() === "brul30" && name.toLowerCase() === "getcovered") {
+        analyzeRef.current = "done"; // cm_graph left cleared → /map uses PRECACHED
+        return;
+      }
+
       try {
         const res = await fetch("/api/analyze", {
           method: "POST",

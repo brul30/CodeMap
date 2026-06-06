@@ -19,7 +19,6 @@
  *    failure we return { error } with a status, so the loading screen can fall
  *    back to the seed/precached graph instead of dead-ending.
  */
-import { auth } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { generateMap } from "@/lib/generate-map";
@@ -42,13 +41,10 @@ const bodySchema = z.object({
 });
 
 export async function POST(request: Request) {
-  // 1. Auth gate — server-side boundary.
-  const { userId } = await auth();
-  if (!userId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  // Public, token-free: anyone can paste a public repo URL. (Demo runs locally;
+  // analysis only reads public GitHub data and never touches user secrets.)
 
-  // 2. Validate the request body.
+  // 1. Validate the request body.
   let raw: unknown;
   try {
     raw = await request.json();
